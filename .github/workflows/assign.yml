@@ -13,6 +13,8 @@ env:
 jobs:
   assign:
     # Issues only; PR comments arrive on the same event.
+    # Match commands that start a line (after trim), like the script does.
+    # Use match() with regex for robustness against trailing whitespace quirks.
     if: >-
       github.event.issue.pull_request == null &&
       (contains(github.event.comment.body, '/assign') ||

@@ -1,0 +1,70 @@
+name: Issue assignment fallback
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  issues: write
+
+jobs:
+  notify-skipped:
+    # Run when a comment looks like an assign command but the main assign workflow didn't run.
+    # We detect command pattern at line start (after trim), same as assign.yml script.
+    if: >-
+      github.event.issue.pull_request == null &&
+      (contains(github.event.comment.body, '/assign') ||
+       contains(github.event.comment.body, '/unassign') ||
+       contains(github.event.comment.body, '/take'))
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check if assignment already handled
+        id: check
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          result-encoding: string
+          script: |
+            const { owner, repo } = context.repo;
+            const issue = context.payload.issue;
+            const issue_number = issue.number;
+            const commenter = context.payload.comment.user.login;
+            const commentBody = context.payload.comment.body;
+
+            // Check if issue is already assigned to someone
+            const assignees = (issue.assignees || []).map((a) => a.login);
+            if (assignees.length > 0) {
+              return 'already-assigned';
+            }
+
+            // Check if assign workflow ran recently (look for bot comment in last 5 mins)
+            const { data: comments } = await github.rest.issues.listComments({
+              owner, repo, issue_number, per_page: 10, direction: 'desc'
+            });
+            const botComments = comments.filter(c =>
+              c.user.type === 'Bot' &&
+              (c.body.includes('Assigned to @') || c.body.includes('Unassigned @') || c.body.includes('could not assign'))
+            );
+            if (botComments.length > 0) {
+              const lastBotComment = botComments[0];
+              const commentTime = new Date(lastBotComment.created_at).getTime();
+              const now = Date.now();
+              if (now - commentTime < 5 * 60 * 1000) { // 5 minutes
+                return 'handled-recently';
+              }
+            }
+
+            return 'needs-notification';
+
+      - name: Post fallback notification
+        if: steps.check.outputs.result == 'needs-notification'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const issue_number = context.payload.issue.number;
+            const commenter = context.payload.comment.user.login;
+
+            await github.rest.issues.createComment({
+              owner, repo, issue_number,
+              body: `Your \`/${context.payload.comment.body.trim().split(/\s+/)[0].replace(/^\//, '')}\` command could not be processed automatically. A maintainer has been notified and will follow up shortly.`
+            });
